@@ -5,23 +5,38 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 const (
 	githubAPIURL = "https://api.github.com"
 )
 
+// Shared HTTP client with timeout for all API requests
+var httpClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
+
 type Variable struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
 }
 
+// Command-line flags
+var (
+	diffMode = flag.Bool("diff", false, "Show diff and exit without syncing")
+)
+
 func main() {
+	// Parse command-line flags
+	flag.Parse()
+
 	// Get information from environment variables
 	token := os.Getenv("GITHUB_TOKEN")
 	owner := os.Getenv("GITHUB_OWNER")
@@ -54,19 +69,65 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("📝 Read %d variables from CSV file\n\n", len(variables))
+	fmt.Printf("📝 Read %d variables from CSV file\n", len(variables))
+
+	// Fetch current GitHub variables
+	fmt.Println("🔍 Fetching current variables from GitHub...")
+	remoteVariables, err := FetchGitHubVariables(token, owner, repo, environment)
+	if err != nil {
+		fmt.Printf("❌ Error fetching GitHub variables: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✅ Fetched %d variables from GitHub\n", len(remoteVariables))
+
+	// Compare local and remote variables
+	diffResult := CompareSets(variables, remoteVariables)
+
+	// Display diff summary and details
+	DisplayDiffSummary(diffResult)
+	DisplayDetailedDiff(diffResult)
+
+	// If --diff flag is set, exit after showing diff
+	if *diffMode {
+		fmt.Println("ℹ️  Diff mode: No changes were made")
+		os.Exit(0)
+	}
+
+	// Calculate variables to sync (only new and updated)
+	variablesToSync := []Variable{}
+	variablesToSync = append(variablesToSync, diffResult.New...)
+	for _, updated := range diffResult.Updated {
+		variablesToSync = append(variablesToSync, Variable{
+			Name:  updated.Name,
+			Value: updated.NewValue,
+		})
+	}
+
+	// If nothing to sync, exit
+	if len(variablesToSync) == 0 {
+		fmt.Println("\n✅ No changes to sync. All variables are up to date!")
+		os.Exit(0)
+	}
 
 	// Show confirmation before syncing
-	if !confirmSync(owner, repo, environment, token, variables) {
+	if !confirmSync(owner, repo, environment, token, diffResult) {
 		fmt.Println("\n❌ Sync cancelled by user")
 		os.Exit(0)
 	}
 
 	fmt.Println("\n🚀 Starting sync...\n")
 
-	// Sync each variable to GitHub
-	successCount := 0
-	for _, variable := range variables {
+	// Create a map of new variables for O(1) lookup
+	newVarMap := make(map[string]bool)
+	for _, v := range diffResult.New {
+		newVarMap[v.Name] = true
+	}
+
+	// Sync only the changed variables
+	newCount := 0
+	updateCount := 0
+	failedCount := 0
+	for _, variable := range variablesToSync {
 		if variable.Name == "" {
 			continue
 		}
@@ -74,13 +135,28 @@ func main() {
 		err := syncVariable(token, owner, repo, environment, variable)
 		if err != nil {
 			fmt.Printf("❌ Error syncing variable '%s': %v\n", variable.Name, err)
+			failedCount++
 		} else {
-			fmt.Printf("✅ Synced variable: %s\n", variable.Name)
-			successCount++
+			// Check if this is a new or updated variable using map lookup (O(1))
+			if newVarMap[variable.Name] {
+				fmt.Printf("✅ Created variable: %s\n", variable.Name)
+				newCount++
+			} else {
+				fmt.Printf("✅ Updated variable: %s\n", variable.Name)
+				updateCount++
+			}
 		}
 	}
 
-	fmt.Printf("\n🎉 Completed! Synced %d/%d variables\n", successCount, len(variables))
+	// Display final results
+	fmt.Println()
+	if failedCount > 0 {
+		fmt.Printf("🎉 Completed! Created %d, Updated %d, Failed %d, Total %d variables\n", 
+			newCount, updateCount, failedCount, newCount+updateCount+failedCount)
+	} else {
+		fmt.Printf("🎉 Completed! Created %d, Updated %d, Total %d variables\n", 
+			newCount, updateCount, newCount+updateCount)
+	}
 }
 
 func readCSV(filename string) ([]Variable, error) {
@@ -124,8 +200,8 @@ func readCSV(filename string) ([]Variable, error) {
 	return variables, nil
 }
 
-func confirmSync(owner, repo, environment, token string, variables []Variable) bool {
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+func confirmSync(owner, repo, environment, token string, diff DiffResult) bool {
+	fmt.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("📋 SYNC CONFIGURATION")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	
@@ -145,18 +221,10 @@ func confirmSync(owner, repo, environment, token string, variables []Variable) b
 	
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	
-	// Display variables to be synced
-	fmt.Printf("\n📦 Variables to sync (%d):\n", len(variables))
-	for i, v := range variables {
-		if v.Name == "" {
-			continue
-		}
-		valuePreview := v.Value
-		if len(valuePreview) > 50 {
-			valuePreview = valuePreview[:47] + "..."
-		}
-		fmt.Printf("  %2d. %s = %s\n", i+1, v.Name, valuePreview)
-	}
+	// Display sync summary
+	totalToSync := len(diff.New) + len(diff.Updated)
+	fmt.Printf("\n📦 Will sync %d variable(s) (%d new, %d updated)\n", 
+		totalToSync, len(diff.New), len(diff.Updated))
 	
 	// Ask for confirmation
 	fmt.Print("\n⚠️  Do you want to proceed with the sync? (yes/no): ")
@@ -214,8 +282,7 @@ func checkVariableExists(token, owner, repo, environment, name string) (bool, er
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return false, err
 	}
@@ -254,8 +321,7 @@ func createVariable(token, owner, repo, environment string, variable Variable) e
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -299,8 +365,7 @@ func updateVariable(token, owner, repo, environment string, variable Variable) e
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}
