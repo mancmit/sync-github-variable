@@ -36,9 +36,23 @@ export GITHUB_ENVIRONMENT="production"  # or staging, development, etc.
 ### Command-line Options
 
 - `--diff` - Show differences between local CSV and GitHub variables, then exit without syncing
-- No flags - Show diff, ask for confirmation, then sync only changed variables
+- `--backup` - Create a backup of GitHub variables, then exit
+- `--no-backup` - Skip automatic backup before syncing (backup is enabled by default)
+- No flags - Show diff, auto-backup, ask for confirmation, then sync only changed variables
 
-### Option 1: View diff only (no sync)
+### Option 1: Backup Mode - Create manual backup
+
+```bash
+# Create backup of GitHub variables
+./sync-variables --backup
+```
+
+This will:
+- Fetch all current variables from GitHub
+- Save to timestamped backup file in `backups/` directory
+- Exit without syncing
+
+### Option 2: View diff only (no sync)
 
 ```bash
 # Build
@@ -54,53 +68,96 @@ This will:
 - Display summary and detailed diff
 - Exit without making any changes
 
-### Option 2: Normal sync with diff preview
+### Option 3: Normal sync with auto-backup
 
 ```bash
 # Build
 go build -o sync-variables
 
-# Sync with diff preview
+# Sync with diff preview and auto-backup (default behavior)
 ./sync-variables
+
+# Sync without auto-backup
+./sync-variables --no-backup
 ```
 
 This will:
 - Show diff summary and details
 - Ask for confirmation
+- **Automatically create a backup before syncing** (unless `--no-backup` is used)
 - Sync only new and updated variables (skip unchanged)
 - Display results with counts
 
-### Option 3: Run directly (without building)
+### Option 4: Run directly (without building)
 
 ```bash
+# Backup mode
+go run . --backup
+
 # View diff only
 go run . --diff
 
-# Normal sync
+# Normal sync with auto-backup
 go run .
+
+# Sync without backup
+go run . --no-backup
 ```
 
-**Note**: Use `go run .` to compile all Go files in the package. Running `go run main.go` will fail because it won't include `diff.go`.
+**Note**: Use `go run .` to compile all Go files in the package. Running `go run main.go` will fail because it won't include `diff.go` and `backup.go`.
 
-### Option 4: Run with inline env vars
+### Option 5: Run with inline env vars
 
 **Repository-level:**
 ```bash
+# Backup
+GITHUB_TOKEN="ghp_xxx" GITHUB_OWNER="owner" GITHUB_REPO="repo" go run . --backup
+
 # View diff
 GITHUB_TOKEN="ghp_xxx" GITHUB_OWNER="owner" GITHUB_REPO="repo" go run . --diff
 
-# Sync
+# Sync with auto-backup
 GITHUB_TOKEN="ghp_xxx" GITHUB_OWNER="owner" GITHUB_REPO="repo" go run .
+
+# Sync without backup
+GITHUB_TOKEN="ghp_xxx" GITHUB_OWNER="owner" GITHUB_REPO="repo" go run . --no-backup
 ```
 
 **Environment-specific:**
 ```bash
+# Backup
+GITHUB_TOKEN="ghp_xxx" GITHUB_OWNER="owner" GITHUB_REPO="repo" GITHUB_ENVIRONMENT="production" go run . --backup
+
 # View diff
 GITHUB_TOKEN="ghp_xxx" GITHUB_OWNER="owner" GITHUB_REPO="repo" GITHUB_ENVIRONMENT="production" go run . --diff
 
-# Sync
+# Sync with auto-backup
 GITHUB_TOKEN="ghp_xxx" GITHUB_OWNER="owner" GITHUB_REPO="repo" GITHUB_ENVIRONMENT="production" go run .
 ```
+
+## Backup Features
+
+The tool includes comprehensive backup functionality:
+
+**Automatic Backup (Default):**
+- Automatically creates a backup before every sync operation
+- Can be disabled with `--no-backup` flag
+- Asks for confirmation if backup fails
+
+**Manual Backup:**
+- Use `--backup` flag to create a backup without syncing
+- Useful for scheduled backups or before manual changes
+
+**Backup Storage:**
+- All backups saved to `backups/` directory
+- Timestamped filenames: `backup_OWNER_REPO_[ENV_]TIMESTAMP.csv`
+
+**Backup Use Cases:**
+- Regular backups before sync operations
+- Disaster recovery and rollback capability
+- Audit trail of variable changes over time
+- Safe testing of variable modifications
+- Export current state for documentation or sharing (use backup CSV files)
 
 ## Diff Mode Feature
 
@@ -177,6 +234,14 @@ Key3,Val3,Optional note
 
 ## Example Output
 
+### Backup Mode Output
+
+```
+🎯 Target: Repository owner/repo
+💾 Backup Mode: Creating backup of GitHub variables...
+✅ Backup saved: backups/backup_owner_repo_2024-12-12_14-30-45.csv
+```
+
 ### Diff Mode Output
 
 ```
@@ -217,7 +282,7 @@ Note: These will NOT be deleted from GitHub
 ℹ️  Diff mode: No changes were made
 ```
 
-### Normal Sync Output
+### Normal Sync Output (with Auto-Backup)
 
 ```
 [... diff output as above ...]
@@ -234,6 +299,9 @@ Token:       ghp_****xxxx
 📦 Will sync 5 variable(s) (3 new, 2 updated)
 
 ⚠️  Do you want to proceed with the sync? (yes/no): yes
+
+💾 Creating backup before sync...
+✅ Backup saved: backups/backup_myorg_myrepo_2024-12-12_14-35-20.csv
 
 🚀 Starting sync...
 

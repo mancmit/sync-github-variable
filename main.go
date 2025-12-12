@@ -30,7 +30,9 @@ type Variable struct {
 
 // Command-line flags
 var (
-	diffMode = flag.Bool("diff", false, "Show diff and exit without syncing")
+	diffMode   = flag.Bool("diff", false, "Show diff and exit without syncing")
+	backupMode = flag.Bool("backup", false, "Create backup and exit without syncing")
+	noBackup   = flag.Bool("no-backup", false, "Skip automatic backup before syncing")
 )
 
 func main() {
@@ -60,6 +62,12 @@ func main() {
 		fmt.Printf("🎯 Target: Environment '%s' in %s/%s\n", environment, owner, repo)
 	} else {
 		fmt.Printf("🎯 Target: Repository %s/%s\n", owner, repo)
+	}
+
+	// Handle manual backup mode
+	if *backupMode {
+		handleBackupMode(token, owner, repo, environment)
+		return
 	}
 
 	// Read CSV file
@@ -113,6 +121,25 @@ func main() {
 	if !confirmSync(owner, repo, environment, token, diffResult) {
 		fmt.Println("\n❌ Sync cancelled by user")
 		os.Exit(0)
+	}
+
+	// Auto-backup before syncing (unless disabled)
+	if !*noBackup {
+		fmt.Println("\n💾 Creating backup before sync...")
+		backupFile, err := BackupGitHubVariables(token, owner, repo, environment)
+		if err != nil {
+			fmt.Printf("⚠️  Warning: Failed to create backup: %v\n", err)
+			fmt.Print("Continue without backup? (yes/no): ")
+			reader := bufio.NewReader(os.Stdin)
+			input, _ := reader.ReadString('\n')
+			input = strings.TrimSpace(strings.ToLower(input))
+			if input != "yes" && input != "y" {
+				fmt.Println("❌ Sync cancelled")
+				os.Exit(0)
+			}
+		} else {
+			fmt.Printf("✅ Backup saved: %s\n", backupFile)
+		}
 	}
 
 	fmt.Println("\n🚀 Starting sync...\n")
@@ -377,5 +404,18 @@ func updateVariable(token, owner, repo, environment string, variable Variable) e
 	}
 
 	return nil
+}
+
+// handleBackupMode creates a backup of GitHub variables
+func handleBackupMode(token, owner, repo, environment string) {
+	fmt.Println("💾 Backup Mode: Creating backup of GitHub variables...")
+	
+	backupFile, err := BackupGitHubVariables(token, owner, repo, environment)
+	if err != nil {
+		fmt.Printf("❌ Error creating backup: %v\n", err)
+		os.Exit(1)
+	}
+	
+	fmt.Printf("✅ Backup saved: %s\n", backupFile)
 }
 
